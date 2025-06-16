@@ -5,7 +5,7 @@ import logging
 import pandas as pd
 from tqdm import tqdm
 import time
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # Настройка логирования
 logging.basicConfig(
@@ -55,6 +55,9 @@ def process_works():
     filtered_works = 0
     start_time = time.time()
     
+    # Счетчик типов публикаций
+    type_counter = Counter()
+    
     # Обработка файлов works
     works_dir = os.path.join(DATA_DIR, "works")
     
@@ -82,91 +85,122 @@ def process_works():
                 try:
                     work = json.loads(line)
                     
-                    # Фильтрация по году публикации и типу
-                    publication_year = work.get('publication_year')
-                    work_type = work.get('type')
+                    # Удаляем фильтрацию по году публикации и типу
+                    # Просто берем все публикации
                     
-                    if (publication_year is not None and publication_year >= 2020 and 
-                        (work_type == "journal-article" or work_type is None)):
-                        
-                        work_id = work.get('id')
-                        if not work_id:
-                            continue
-                        
-                        # Извлечение данных о публикации
-                        work_data = {
-                            'id': work_id,
-                            'title': work.get('title', ''),
-                            'publication_year': publication_year,
-                            'doi': work.get('doi', ''),
-                            'cited_by_count': work.get('cited_by_count', 0),
-                            'type': work_type
-                        }
-                        
-                        # Добавление данных о публикации
-                        works_data.append(work_data)
-                        
-                        # Обработка source (источника)
-                        host_venue = work.get('host_venue', {})
+                    work_id = work.get('id')
+                    if not work_id:
+                        continue
+                    
+                    # Увеличиваем счетчик типа публикации
+                    type_counter[work.get('type')] += 1
+                    
+                    # Извлечение данных о публикации
+                    work_data = {
+                        'id': work_id,
+                        'title': work.get('title', ''),
+                        'publication_year': work.get('publication_year'),
+                        'doi': work.get('doi', ''),
+                        'cited_by_count': work.get('cited_by_count', 0),
+                        'type': work.get('type')
+                    }
+                    
+                    # Добавление данных о публикации
+                    works_data.append(work_data)
+                    
+                    # Обработка source (источника)
+                    # Проверяем оба возможных места для source_id
+                    host_venue = work.get('host_venue', {})
+                    primary_location = work.get('primary_location', {})
+                    
+                    # Получаем source_id из host_venue или primary_location.source
+                    source_id = None
+                    publisher = None
+                    
+                    # Проверяем host_venue
+                    if host_venue and isinstance(host_venue, dict):
                         source_id = host_venue.get('id')
-                        if source_id:
-                            source_ids.add(source_id)
-                            work_source_relations.append({
-                                'work_id': work_id,
-                                'source_id': source_id
+                        publisher = host_venue.get('publisher')
+                    
+                    # Если не нашли в host_venue, проверяем primary_location.source
+                    if not source_id and primary_location and isinstance(primary_location, dict):
+                        source = primary_location.get('source', {})
+                        if source and isinstance(source, dict):
+                            source_id = source.get('id')
+                            publisher = source.get('publisher')
+                    
+                    # Если нашли source_id, добавляем связь
+                    if source_id:
+                        source_ids.add(source_id)
+                        work_source_relations.append({
+                            'work_id': work_id,
+                            'source_id': source_id
+                        })
+                        
+                        # Добавляем издателя, если он есть
+                        if publisher:
+                            publisher_names.add(publisher)
+                    
+                    # Отладочная информация для первых 10 публикаций
+                    if filtered_works < 10:
+                        logger.info(f"Публикация {filtered_works+1}, ID: {work_id}")
+                        logger.info(f"host_venue: {host_venue}")
+                    
+                    # Подсчет структуры host_venue
+                    if filtered_works % 1000 == 0:
+                        if host_venue is None:
+                            logger.info(f"host_venue is None для публикации {work_id}")
+                        elif not isinstance(host_venue, dict):
+                            logger.info(f"host_venue не является словарем для публикации {work_id}, тип: {type(host_venue)}")
+                        elif not host_venue:
+                            logger.info(f"host_venue - пустой словарь для публикации {work_id}")
+                    
+                    # Обработка авторов
+                    authorships = work.get('authorships', [])
+                    for authorship in authorships:
+                        author = authorship.get('author', {})
+                        author_id = author.get('id')
+                        if author_id:
+                            author_ids.add(author_id)
+                            author_work_relations.append({
+                                'author_id': author_id,
+                                'work_id': work_id
                             })
                             
-                            # Извлечение издателя
-                            publisher = host_venue.get('publisher')
-                            if publisher:
-                                publisher_names.add(publisher)
-                        
-                        # Обработка авторов
-                        authorships = work.get('authorships', [])
-                        for authorship in authorships:
-                            author = authorship.get('author', {})
-                            author_id = author.get('id')
-                            if author_id:
-                                author_ids.add(author_id)
-                                author_work_relations.append({
-                                    'author_id': author_id,
-                                    'work_id': work_id
-                                })
-                                
-                                # Извлечение организаций
-                                institutions = authorship.get('institutions', [])
-                                for institution in institutions:
-                                    institution_id = institution.get('id')
-                                    if institution_id:
-                                        institution_ids.add(institution_id)
-                        
-                        # Обработка концепций
-                        concepts = work.get('concepts', [])
-                        for concept in concepts:
-                            concept_id = concept.get('id')
-                            if concept_id:
-                                concept_ids.add(concept_id)
-                                work_concept_relations.append({
-                                    'work_id': work_id,
-                                    'concept_id': concept_id,
-                                    'score': concept.get('score', 0)
-                                })
-                        
-                        # Обработка цитирований
-                        referenced_works = work.get('referenced_works', [])
-                        for cited_id in referenced_works:
-                            if cited_id:
-                                work_citation_relations.append({
-                                    'citing_id': work_id,
-                                    'cited_id': cited_id
-                                })
-                        
-                        filtered_works += 1
-                        
-                        # Проверка достижения лимита
-                        if filtered_works >= MAX_WORKS:
-                            logger.info(f"Достигнут лимит публикаций: {MAX_WORKS}")
-                            break
+                            # Извлечение организаций
+                            institutions = authorship.get('institutions', [])
+                            for institution in institutions:
+                                institution_id = institution.get('id')
+                                if institution_id:
+                                    institution_ids.add(institution_id)
+                    
+                    # Обработка концепций
+                    concepts = work.get('concepts', [])
+                    for concept in concepts:
+                        concept_id = concept.get('id')
+                        if concept_id:
+                            concept_ids.add(concept_id)
+                            work_concept_relations.append({
+                                'work_id': work_id,
+                                'concept_id': concept_id,
+                                'score': concept.get('score', 0)
+                            })
+                    
+                    # Обработка цитирований
+                    referenced_works = work.get('referenced_works', [])
+                    for cited_id in referenced_works:
+                        if cited_id:
+                            work_citation_relations.append({
+                                'citing_id': work_id,
+                                'cited_id': cited_id
+                            })
+                    
+                    filtered_works += 1
+                    
+                    # Проверка достижения лимита
+                    if filtered_works >= MAX_WORKS:
+                        logger.info(f"Достигнут лимит публикаций: {MAX_WORKS}")
+                        break
                     
                     processed_works += 1
                     
@@ -211,6 +245,7 @@ def process_works():
     
     logger.info(f"Обработка публикаций завершена")
     logger.info(f"Всего обработано: {processed_works}, отфильтровано: {filtered_works}")
+    logger.info(f"Типы публикаций: {dict(type_counter)}")
     logger.info(f"Время обработки: {processing_time:.2f} секунд")
     
     return {
